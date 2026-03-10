@@ -1,7 +1,7 @@
 import os
 import json
 from supabase import create_client, Client
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
@@ -83,9 +83,15 @@ def crawl_network_data():
         page.on("response", handle_response)
 
         print(f"Opening page: {TARGET_URL}")
-page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
 
-page.wait_for_timeout(5000)        print("Page title:", page.title())
+        try:
+            page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
+        except PlaywrightTimeoutError:
+            print("Page load timed out, but continuing with captured network responses...")
+
+        page.wait_for_timeout(5000)
+
+        print("Page title:", page.title())
         print("Final URL:", page.url)
 
         browser.close()
