@@ -1,7 +1,6 @@
 import os
 import json
 from collections import defaultdict
-from datetime import datetime
 from supabase import create_client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -14,61 +13,67 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
 def extract_prdt_no(payload):
-    """
-    raw_payload 안에서 prdtNo를 찾아낸다.
-    payload 구조가 여러 가지라서 유연하게 찾는다.
-    """
-
     if not isinstance(payload, dict):
         return None
 
-    # product block
     product = payload.get("product")
     if isinstance(product, dict):
-        if product.get("prdtNo"):
-            return product.get("prdtNo")
+        return product.get("prdtNo")
 
-    # details
     details = payload.get("details")
     if isinstance(details, dict):
-        if details.get("prdtNo"):
-            return details.get("prdtNo")
-
-    # images
-    images = payload.get("images")
-    if isinstance(images, list) and len(images) > 0:
-        if isinstance(images[0], dict):
-            if images[0].get("prdtNo"):
-                return images[0].get("prdtNo")
-
-    # reviews
-    reviews = payload.get("reviewList")
-    if isinstance(reviews, list) and len(reviews) > 0:
-        if isinstance(reviews[0], dict):
-            if reviews[0].get("prdtNo"):
-                return reviews[0].get("prdtNo")
+        return details.get("prdtNo")
 
     return None
 
 
+def extract_image(product):
+    # 1순위: imagePath
+    image_path = product.get("imagePath")
+    if image_path:
+        if image_path.startswith("http"):
+            return image_path
+        return f"https://static.global.oliveyoung.com/{image_path}"
+
+    # 2순위: thumbnailList
+    thumb_list = product.get("thumbnailList")
+    if isinstance(thumb_list, list) and len(thumb_list) > 0:
+        first = thumb_list[0]
+        if isinstance(first, dict):
+            thumb_path = first.get("imagePath")
+            if thumb_path:
+                if thumb_path.startswith("http"):
+                    return thumb_path
+                return f"https://static.global.oliveyoung.com/{thumb_path}"
+
+    return None
+
+
+def extract_ingredients(details):
+    if not isinstance(details, dict):
+        return None
+
+    # Olive Young details payload 구조가 다를 수 있어서 유연하게 처리
+    return (
+        details.get("ingredients")
+        or details.get("ingr")
+        or details.get("ingredient")
+        or details.get("fullIngredients")
+    )
+
+
 def main():
-
     print("Loading raw_products...")
-
     raw_rows = supabase.table("raw_products").select("*").execute()
 
     grouped = defaultdict(dict)
-
     skipped_json = 0
 
     for row in raw_rows.data:
-
         raw_payload = row.get("raw_payload")
-
         if not raw_payload:
             continue
 
-        # JSON decode
         try:
             payload = json.loads(raw_payload)
         except Exception:
@@ -76,7 +81,6 @@ def main():
             continue
 
         prdt_no = extract_prdt_no(payload)
-
         if not prdt_no:
             continue
 
@@ -85,50 +89,38 @@ def main():
         if "product" in payload:
             entry["product"] = payload["product"]
 
-        if "images" in payload:
-            entry["images"] = payload["images"]
-
         if "details" in payload:
             entry["details"] = payload["details"]
-
-        if "reviewList" in payload:
-            entry["reviewList"] = payload["reviewList"]
-
-        if "reviewMediaList" in payload:
-            entry["reviewMediaList"] = payload["reviewMediaList"]
 
     print("Grouped products:", len(grouped))
     print("Skipped broken JSON:", skipped_json)
 
-    inserted = 0
+    upserted = 0
 
     for prdt_no, data in grouped.items():
-
         product = data.get("product", {})
-        images = data.get("images", [])
         details = data.get("details", {})
-        reviews = data.get("reviewList", [])
 
-        name = product.get("prdtNm") or product.get("prdtName")
-        brand = product.get("brandNm") or product.get("brandName")
-        price = product.get("salePrc") or product.get("price")
+        if not isinstance(product, dict):
+            continue
 
-        image = None
-        if isinstance(images, list) and len(images) > 0:
-            first = images[0]
-            if isinstance(first, dict):
-                image = first.get("imgUrl") or first.get("imageUrl")
+        # 실제 Olive Young Global payload 기준
+        name = (
+            product.get("prdtName")
+            or product.get("prdtNameEn")
+            or product.get("korPrdtName")
+        )
 
-        ingredients = None
-        if isinstance(details, dict):
-            ingredients = details.get("ingredients") or details.get("ingr")
+        brand = (
+            product.get("brandName")
+            or product.get("brandNameEn")
+            or product.get("korBrandName")
+        )
 
-        rating = product.get("avgScore") or product.get("rating")
+        price = product.get("saleAmt") or product.get("nrmlAmt")
 
-        review_count = product.get("reviewCnt") or product.get("reviewCount")
-
-        if review_count is None and isinstance(reviews, list):
-            review_count = len(reviews)
+        image = extract_image(product)
+        ingredients = extract_ingredients(details)
 
         payload = {
             "product_id": prdt_no,
@@ -137,29 +129,23 @@ def main():
             "price": price,
             "image": image,
             "ingredients": ingredients,
-            "rating": rating,
-            "review_count": review_count,
-            "updated_at": datetime.utcnow().isoformat()
         }
 
         try:
-
             supabase.table("products").upsert(
                 payload,
                 on_conflict="product_id"
             ).execute()
 
-            inserted += 1
-
-            print("Inserted:", prdt_no, name)
+            upserted += 1
+            print(f"Upserted: {prdt_no} / {name}")
 
         except Exception as e:
-
-            print("Insert failed:", prdt_no, e)
+            print(f"Insert failed: {prdt_no} / {e}")
 
     print("\n====================")
-    print("Products inserted:", inserted)
-    print("Total raw rows:", len(raw_rows.data))
+    print(f"Products upserted: {upserted}")
+    print(f"Total raw rows: {len(raw_rows.data)}")
     print("====================")
 
 
