@@ -1,123 +1,66 @@
 import os
 import re
-from urllib.parse import urljoin, urlparse, parse_qs
-
+import requests
 from supabase import create_client
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
-
-if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-    raise ValueError("Missing SUPABASE_URL or SUPABASE_SERVICE_KEY")
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 BASE = "https://www.oliveyoung.co.kr"
 
-TARGET_URLS = [
-    "https://www.oliveyoung.co.kr/store/main/getBestList.do",
-]
+URL = "https://www.oliveyoung.co.kr/store/display/getMCategoryList.do"
 
-DETAIL_PATH_KEYWORD = "/store/goods/getGoodsDetail.do"
-GOODS_NO_FALLBACK = re.compile(r"goodsNo=([A-Z0-9]+)", re.IGNORECASE)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://www.oliveyoung.co.kr/"
+}
 
-
-def extract_goods_no_from_href(href: str):
-    if not href:
-        return None
-
-    try:
-        parsed = urlparse(href)
-        qs = parse_qs(parsed.query)
-        goods_no = qs.get("goodsNo", [None])[0]
-        if goods_no:
-            return goods_no
-    except Exception:
-        pass
-
-    match = GOODS_NO_FALLBACK.search(href)
-    if match:
-        return match.group(1)
-
-    return None
+goods_pattern = re.compile(r"goodsNo=([A-Z0-9]+)")
 
 
-def save_goods(goods_no: str, detail_url: str):
-    supabase.table("product_ids_kr").upsert(
-        {
-            "goods_no": goods_no,
-            "detail_url": detail_url,
-        },
-        on_conflict="goods_no"
-    ).execute()
+def collect():
 
+    collected = set()
 
-def main():
-    collected = {}
+    for page in range(1, 50):
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        params = {
+            "dispCatNo": "90000010001",
+            "pageIdx": page
+        }
 
-        for url in TARGET_URLS:
-            page = browser.new_page()
+        r = requests.get(URL, params=params, headers=HEADERS)
 
-            print(f"\nOPENING: {url}")
+        print("PAGE:", page, "STATUS:", r.status_code)
 
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            except PlaywrightTimeoutError:
-                print("Timed out on page load, continuing...")
+        html = r.text
 
-            page.wait_for_timeout(5000)
+        goods = goods_pattern.findall(html)
 
-            hrefs = []
-            try:
-                hrefs = page.locator("a").evaluate_all(
-                    "(els) => els.map(e => e.getAttribute('href') || e.href || '')"
-                )
-            except Exception as e:
-                print("HREF EXTRACT ERROR:", e)
+        print("FOUND:", len(goods))
 
-            print("ANCHOR COUNT:", len(hrefs))
+        if not goods:
+            break
 
-            for href in hrefs:
-                if not href:
-                    continue
+        for g in goods:
+            collected.add(g)
 
-                abs_href = urljoin(BASE, href)
+    print("TOTAL:", len(collected))
 
-                if DETAIL_PATH_KEYWORD not in abs_href:
-                    continue
+    for goods_no in collected:
 
-                goods_no = extract_goods_no_from_href(abs_href)
-                if not goods_no:
-                    continue
+        supabase.table("product_ids_kr").upsert(
+            {
+                "goods_no": goods_no,
+                "detail_url": f"https://www.oliveyoung.co.kr/store/goods/getGoodsDetail.do?goodsNo={goods_no}"
+            },
+            on_conflict="goods_no"
+        ).execute()
 
-                collected[goods_no] = abs_href
-
-            page.close()
-
-        browser.close()
-
-    print("\n====================")
-    print("TOTAL COLLECTED BEFORE SAVE:", len(collected))
-
-    saved = 0
-    for goods_no, detail_url in collected.items():
-        try:
-            save_goods(goods_no, detail_url)
-            saved += 1
-            print("SAVED:", goods_no, detail_url)
-        except Exception as e:
-            print("FAILED:", goods_no, e)
-
-    print("\n====================")
-    print("FINAL SUMMARY")
-    print("Collected:", len(collected))
-    print("Saved:", saved)
-    print("====================")
+        print("SAVED:", goods_no)
 
 
 if __name__ == "__main__":
-    main()
+    collect()
