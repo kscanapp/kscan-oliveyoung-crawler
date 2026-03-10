@@ -1,6 +1,7 @@
 import os
 import json
 from collections import defaultdict
+from datetime import datetime
 from supabase import create_client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -13,66 +14,100 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
 def extract_prdt_no(payload):
-    # 1) product block
-    if isinstance(payload, dict) and "product" in payload and isinstance(payload["product"], dict):
-        return payload["product"].get("prdtNo")
+    """
+    raw_payload 안에서 prdtNo를 찾아낸다.
+    payload 구조가 여러 가지라서 유연하게 찾는다.
+    """
 
-    # 2) images/details/reviews 안쪽에 prdtNo가 있을 수도 있음
-    if isinstance(payload, dict):
-        for key in ["details", "reviewList", "reviewMediaList", "images"]:
-            value = payload.get(key)
+    if not isinstance(payload, dict):
+        return None
 
-            if isinstance(value, dict):
-                if "prdtNo" in value:
-                    return value.get("prdtNo")
+    # product block
+    product = payload.get("product")
+    if isinstance(product, dict):
+        if product.get("prdtNo"):
+            return product.get("prdtNo")
 
-            if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
-                if "prdtNo" in value[0]:
-                    return value[0].get("prdtNo")
+    # details
+    details = payload.get("details")
+    if isinstance(details, dict):
+        if details.get("prdtNo"):
+            return details.get("prdtNo")
+
+    # images
+    images = payload.get("images")
+    if isinstance(images, list) and len(images) > 0:
+        if isinstance(images[0], dict):
+            if images[0].get("prdtNo"):
+                return images[0].get("prdtNo")
+
+    # reviews
+    reviews = payload.get("reviewList")
+    if isinstance(reviews, list) and len(reviews) > 0:
+        if isinstance(reviews[0], dict):
+            if reviews[0].get("prdtNo"):
+                return reviews[0].get("prdtNo")
 
     return None
 
 
 def main():
+
+    print("Loading raw_products...")
+
     raw_rows = supabase.table("raw_products").select("*").execute()
 
     grouped = defaultdict(dict)
 
+    skipped_json = 0
+
     for row in raw_rows.data:
+
         raw_payload = row.get("raw_payload")
+
         if not raw_payload:
             continue
 
+        # JSON decode
         try:
             payload = json.loads(raw_payload)
         except Exception:
+            skipped_json += 1
             continue
 
         prdt_no = extract_prdt_no(payload)
+
         if not prdt_no:
             continue
 
         entry = grouped[prdt_no]
 
-        if isinstance(payload, dict):
-            if "product" in payload:
-                entry["product"] = payload["product"]
-            if "images" in payload:
-                entry["images"] = payload["images"]
-            if "details" in payload:
-                entry["details"] = payload["details"]
-            if "reviewList" in payload:
-                entry["reviewList"] = payload["reviewList"]
-            if "reviewMediaList" in payload:
-                entry["reviewMediaList"] = payload["reviewMediaList"]
+        if "product" in payload:
+            entry["product"] = payload["product"]
 
-    upserted = 0
+        if "images" in payload:
+            entry["images"] = payload["images"]
+
+        if "details" in payload:
+            entry["details"] = payload["details"]
+
+        if "reviewList" in payload:
+            entry["reviewList"] = payload["reviewList"]
+
+        if "reviewMediaList" in payload:
+            entry["reviewMediaList"] = payload["reviewMediaList"]
+
+    print("Grouped products:", len(grouped))
+    print("Skipped broken JSON:", skipped_json)
+
+    inserted = 0
 
     for prdt_no, data in grouped.items():
+
         product = data.get("product", {})
         images = data.get("images", [])
         details = data.get("details", {})
-        review_list = data.get("reviewList", [])
+        reviews = data.get("reviewList", [])
 
         name = product.get("prdtNm") or product.get("prdtName")
         brand = product.get("brandNm") or product.get("brandName")
@@ -88,15 +123,12 @@ def main():
         if isinstance(details, dict):
             ingredients = details.get("ingredients") or details.get("ingr")
 
-        rating = None
-        review_count = None
+        rating = product.get("avgScore") or product.get("rating")
 
-        if isinstance(product, dict):
-            rating = product.get("avgScore") or product.get("rating")
-            review_count = product.get("reviewCnt") or product.get("reviewCount")
+        review_count = product.get("reviewCnt") or product.get("reviewCount")
 
-        if review_count is None and isinstance(review_list, list):
-            review_count = len(review_list)
+        if review_count is None and isinstance(reviews, list):
+            review_count = len(reviews)
 
         payload = {
             "product_id": prdt_no,
@@ -107,17 +139,28 @@ def main():
             "ingredients": ingredients,
             "rating": rating,
             "review_count": review_count,
+            "updated_at": datetime.utcnow().isoformat()
         }
 
-        supabase.table("products").upsert(
-            payload,
-            on_conflict="product_id"
-        ).execute()
+        try:
 
-        upserted += 1
-        print(f"Upserted: {prdt_no} / {name}")
+            supabase.table("products").upsert(
+                payload,
+                on_conflict="product_id"
+            ).execute()
 
-    print(f"Finished. Upserted {upserted} products.")
+            inserted += 1
+
+            print("Inserted:", prdt_no, name)
+
+        except Exception as e:
+
+            print("Insert failed:", prdt_no, e)
+
+    print("\n====================")
+    print("Products inserted:", inserted)
+    print("Total raw rows:", len(raw_rows.data))
+    print("====================")
 
 
 if __name__ == "__main__":
