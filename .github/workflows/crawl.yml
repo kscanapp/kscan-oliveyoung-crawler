@@ -1,4 +1,4 @@
-name: OliveYoung Crawler
+name: OliveYoung Korea Crawler
 
 on:
   workflow_dispatch:
@@ -10,44 +10,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
+      - name: install
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
+          pip install requests beautifulsoup4 supabase
 
-      - name: Collect product ids
+      - name: collect ids
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          python crawler/collect_product_ids.py
+          python crawler/collect_product_ids_kr.py
 
-      - name: Crawl product detail
+      - name: crawl detail
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          python crawler/crawl_product_detail.py
+          python crawler/crawl_product_detail_kr.py
 
-      - name: Parse products
+      - name: parse products
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          python crawler/parse_products.py
-
-      - name: Crawl ingredients
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: |
-          python crawler/crawl_ingredients.py
+          python crawler/parse_products_kr.py
