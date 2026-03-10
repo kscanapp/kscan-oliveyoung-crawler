@@ -83,9 +83,9 @@ def crawl_network_data():
         page.on("response", handle_response)
 
         print(f"Opening page: {TARGET_URL}")
-        page.goto(TARGET_URL, wait_until="networkidle", timeout=60000)
+page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
 
-        print("Page title:", page.title())
+page.wait_for_timeout(5000)        print("Page title:", page.title())
         print("Final URL:", page.url)
 
         browser.close()
