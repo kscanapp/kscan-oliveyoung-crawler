@@ -16,14 +16,21 @@ TARGET_URL = "https://global.oliveyoung.com/product/detail?prdtNo=GA230217683"
 
 def save_debug_response(url: str, data):
     try:
-        supabase.table("raw_products").insert({
-            "source_url": url,
-            "raw_payload": json.dumps(data, ensure_ascii=False)[:50000]
-        }).execute()
-        print(f"Saved raw response from: {url}")
-    except Exception as e:
-        print(f"Failed to save raw response: {e}")
+        payload = json.dumps(data, ensure_ascii=False)
 
+        # 너무 긴 payload 방지
+        payload = payload[:20000]
+
+        result = supabase.table("raw_products").insert({
+            "source_url": url,
+            "raw_payload": payload
+        }).execute()
+
+        print(f"Saved raw response from: {url}")
+        print(result)
+
+    except Exception as e:
+        print(f"Failed to save raw response from {url}: {e}")
 
 def crawl_network_data():
     found_json = []
@@ -36,13 +43,18 @@ def crawl_network_data():
             url = response.url.lower()
 
             interesting_keywords = [
-                "product",
-                "detail",
-                "goods",
-                "api",
-                "item",
-                "prdt",
-            ]
+    "product/detail",
+    "product/review",
+    "prdt",
+    "goods",
+]
+            blocked_domains = [
+    "pinterest.com",
+    "braze.com",
+]
+
+if any(domain in url for domain in blocked_domains):
+    return
 
             if not any(keyword in url for keyword in interesting_keywords):
                 return
