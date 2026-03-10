@@ -18,27 +18,69 @@ def extract_prdt_no(payload):
 
     product = payload.get("product")
     if isinstance(product, dict):
-        return product.get("prdtNo")
+        prdt_no = product.get("prdtNo")
+        if prdt_no:
+            return prdt_no
 
     details = payload.get("details")
     if isinstance(details, dict):
-        return details.get("prdtNo")
+        prdt_no = details.get("prdtNo")
+        if prdt_no:
+            return prdt_no
+
+    images = payload.get("images")
+    if isinstance(images, list) and len(images) > 0:
+        first = images[0]
+        if isinstance(first, dict):
+            prdt_no = first.get("prdtNo")
+            if prdt_no:
+                return prdt_no
 
     return None
 
 
+def extract_name(product):
+    if not isinstance(product, dict):
+        return None
+
+    return (
+        product.get("prdtName")
+        or product.get("prdtNameEn")
+        or product.get("korPrdtName")
+    )
+
+
+def extract_brand(product):
+    if not isinstance(product, dict):
+        return None
+
+    return (
+        product.get("brandName")
+        or product.get("brandNameEn")
+        or product.get("korBrandName")
+    )
+
+
+def extract_price(product):
+    if not isinstance(product, dict):
+        return None
+
+    return product.get("saleAmt") or product.get("nrmlAmt")
+
+
 def extract_image(product):
-    # 1순위: imagePath
+    if not isinstance(product, dict):
+        return None
+
     image_path = product.get("imagePath")
     if image_path:
         if image_path.startswith("http"):
             return image_path
         return f"https://static.global.oliveyoung.com/{image_path}"
 
-    # 2순위: thumbnailList
-    thumb_list = product.get("thumbnailList")
-    if isinstance(thumb_list, list) and len(thumb_list) > 0:
-        first = thumb_list[0]
+    thumbnail_list = product.get("thumbnailList")
+    if isinstance(thumbnail_list, list) and len(thumbnail_list) > 0:
+        first = thumbnail_list[0]
         if isinstance(first, dict):
             thumb_path = first.get("imagePath")
             if thumb_path:
@@ -53,7 +95,6 @@ def extract_ingredients(details):
     if not isinstance(details, dict):
         return None
 
-    # Olive Young details payload 구조가 다를 수 있어서 유연하게 처리
     return (
         details.get("ingredients")
         or details.get("ingr")
@@ -64,13 +105,16 @@ def extract_ingredients(details):
 
 def main():
     print("Loading raw_products...")
+
     raw_rows = supabase.table("raw_products").select("*").execute()
 
     grouped = defaultdict(dict)
     skipped_json = 0
+    skipped_missing_prdt = 0
 
     for row in raw_rows.data:
         raw_payload = row.get("raw_payload")
+
         if not raw_payload:
             continue
 
@@ -81,7 +125,9 @@ def main():
             continue
 
         prdt_no = extract_prdt_no(payload)
+
         if not prdt_no:
+            skipped_missing_prdt += 1
             continue
 
         entry = grouped[prdt_no]
@@ -92,35 +138,38 @@ def main():
         if "details" in payload:
             entry["details"] = payload["details"]
 
-    print("Grouped products:", len(grouped))
-    print("Skipped broken JSON:", skipped_json)
+        if "images" in payload:
+            entry["images"] = payload["images"]
+
+    print(f"Grouped products: {len(grouped)}")
+    print(f"Skipped broken JSON: {skipped_json}")
+    print(f"Skipped missing prdtNo: {skipped_missing_prdt}")
 
     upserted = 0
+    skipped_empty_name = 0
+    skipped_empty_brand = 0
 
     for prdt_no, data in grouped.items():
         product = data.get("product", {})
         details = data.get("details", {})
 
-        if not isinstance(product, dict):
-            continue
-
-        # 실제 Olive Young Global payload 기준
-        name = (
-            product.get("prdtName")
-            or product.get("prdtNameEn")
-            or product.get("korPrdtName")
-        )
-
-        brand = (
-            product.get("brandName")
-            or product.get("brandNameEn")
-            or product.get("korBrandName")
-        )
-
-        price = product.get("saleAmt") or product.get("nrmlAmt")
-
+        name = extract_name(product)
+        brand = extract_brand(product)
+        price = extract_price(product)
         image = extract_image(product)
         ingredients = extract_ingredients(details)
+
+        # 품질 안정화: 이름 없는 상품은 저장하지 않음
+        if not name:
+            skipped_empty_name += 1
+            print(f"Skipping product with empty name: {prdt_no}")
+            continue
+
+        # 브랜드 없는 상품도 저장하지 않음
+        if not brand:
+            skipped_empty_brand += 1
+            print(f"Skipping product with empty brand: {prdt_no}")
+            continue
 
         payload = {
             "product_id": prdt_no,
@@ -145,6 +194,8 @@ def main():
 
     print("\n====================")
     print(f"Products upserted: {upserted}")
+    print(f"Skipped empty name: {skipped_empty_name}")
+    print(f"Skipped empty brand: {skipped_empty_brand}")
     print(f"Total raw rows: {len(raw_rows.data)}")
     print("====================")
 
