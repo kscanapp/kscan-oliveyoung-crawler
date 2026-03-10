@@ -17,8 +17,6 @@ TARGET_URL = "https://global.oliveyoung.com/product/detail?prdtNo=GA230217683"
 def save_debug_response(url: str, data):
     try:
         payload = json.dumps(data, ensure_ascii=False)
-
-        # 너무 긴 payload 방지
         payload = payload[:20000]
 
         result = supabase.table("raw_products").insert({
@@ -32,6 +30,7 @@ def save_debug_response(url: str, data):
     except Exception as e:
         print(f"Failed to save raw response from {url}: {e}")
 
+
 def crawl_network_data():
     found_json = []
 
@@ -42,19 +41,20 @@ def crawl_network_data():
         def handle_response(response):
             url = response.url.lower()
 
-            interesting_keywords = [
-    "product/detail",
-    "product/review",
-    "prdt",
-    "goods",
-]
             blocked_domains = [
-    "pinterest.com",
-    "braze.com",
-]
+                "pinterest.com",
+                "braze.com",
+            ]
 
-if any(domain in url for domain in blocked_domains):
-    return
+            if any(domain in url for domain in blocked_domains):
+                return
+
+            interesting_keywords = [
+                "product/detail",
+                "product/review",
+                "prdt",
+                "goods",
+            ]
 
             if not any(keyword in url for keyword in interesting_keywords):
                 return
@@ -66,7 +66,7 @@ if any(domain in url for domain in blocked_domains):
 
             try:
                 data = response.json()
-                print(f"\n=== JSON RESPONSE FOUND ===")
+                print("\n=== JSON RESPONSE FOUND ===")
                 print(f"URL: {response.url}")
                 print(f"Top-level type: {type(data).__name__}")
 
@@ -76,8 +76,9 @@ if any(domain in url for domain in blocked_domains):
                     print(f"List length: {len(data)}")
 
                 found_json.append((response.url, data))
-            except Exception:
-                pass
+
+            except Exception as e:
+                print(f"Failed to parse JSON from {response.url}: {e}")
 
         page.on("response", handle_response)
 
