@@ -1,7 +1,7 @@
 import os
 import re
-import requests
 from supabase import create_client
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
@@ -11,12 +11,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Referer": "https://www.oliveyoung.co.kr/"
-}
-
-# 먼저 안정적으로 goodsNo가 많이 노출되는 페이지 위주로 시작
+# 한국 올리브영에서 실제로 goodsNo가 노출될 가능성이 높은 페이지부터 시작
 TARGET_URLS = [
     "https://www.oliveyoung.co.kr/store/main/getBestList.do?dispCatNo=90000010001&pageIdx=1",
     "https://www.oliveyoung.co.kr/store/main/getBestList.do?dispCatNo=90000010001&pageIdx=2",
@@ -26,56 +21,103 @@ TARGET_URLS = [
     "https://www.oliveyoung.co.kr/store/main/getBestList.do?dispCatNo=90000010009&pageIdx=3",
 ]
 
-GOODS_NO_REGEX_1 = re.compile(r"goodsNo=([A-Z0-9]+)")
-GOODS_NO_REGEX_2 = re.compile(r'"goodsNo"\s*:\s*"([A-Z0-9]+)"')
-GOODS_NO_REGEX_3 = re.compile(r"goodsNo['\"]?\s*[:=]\s*['\"]([A-Z0-9]+)['\"]")
+# goods 상세 URL 패턴
+REGEXES = [
+    re.compile(r"goodsNo=([A-Z0-9]+)", re.IGNORECASE),
+    re.compile(r'"goodsNo"\s*:\s*"([A-Z0-9]+)"', re.IGNORECASE),
+    re.compile(r"goodsNo['\"]?\s*[:=]\s*['\"]([A-Z0-9]+)['\"]", re.IGNORECASE),
+    re.compile(r"\bA\d{12}\b"),  # 예: A000000231894
+]
 
 
 def extract_goods_nos(text: str):
     ids = set()
+    if not text:
+        return ids
 
-    for regex in [GOODS_NO_REGEX_1, GOODS_NO_REGEX_2, GOODS_NO_REGEX_3]:
-        for match in regex.findall(text or ""):
+    for regex in REGEXES:
+        for match in regex.findall(text):
+            if isinstance(match, tuple):
+                match = match[0]
             ids.add(match)
 
     return ids
 
 
 def save_goods_no(goods_no: str):
-    try:
-        supabase.table("product_ids_kr").upsert(
-            {"goods_no": goods_no},
-            on_conflict="goods_no"
-        ).execute()
-        print("SAVED:", goods_no)
-    except Exception as e:
-        print(f"FAILED TO SAVE {goods_no}: {e}")
+    supabase.table("product_ids_kr").upsert(
+        {"goods_no": goods_no},
+        on_conflict="goods_no"
+    ).execute()
 
 
-def collect():
+def main():
     collected = set()
 
-    for url in TARGET_URLS:
-        print(f"\nFETCHING: {url}")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
 
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=30)
-            print("STATUS:", r.status_code)
+        for url in TARGET_URLS:
+            page = browser.new_page()
 
-            text = r.text
-            print("HTML LENGTH:", len(text))
+            print(f"\nOPENING: {url}")
 
-            ids = extract_goods_nos(text)
-            print("FOUND IDs:", len(ids))
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            except PlaywrightTimeoutError:
+                print("Timed out on page load, continuing...")
 
-            for goods_no in ids:
-                collected.add(goods_no)
+            page.wait_for_timeout(5000)
 
-        except Exception as e:
-            print("REQUEST FAILED:", e)
+            # 1) HTML 전체에서 추출
+            try:
+                html = page.content()
+                html_ids = extract_goods_nos(html)
+                print(f"FOUND IN HTML: {len(html_ids)}")
+                collected.update(html_ids)
+            except Exception as e:
+                print(f"HTML PARSE ERROR: {e}")
+
+            # 2) href에서 추출
+            try:
+                hrefs = page.locator("a").evaluate_all(
+                    "(els) => els.map(e => e.href || '')"
+                )
+                href_ids = set()
+                for href in hrefs:
+                    href_ids.update(extract_goods_nos(href))
+
+                print(f"FOUND IN HREFS: {len(href_ids)}")
+                collected.update(href_ids)
+
+                print("SAMPLE HREFS:")
+                for href in hrefs[:15]:
+                    print(href)
+
+            except Exception as e:
+                print(f"HREF PARSE ERROR: {e}")
+
+            # 3) 이미지 src에도 goodsNo가 숨어 있을 수 있어서 같이 추출
+            try:
+                srcs = page.locator("img").evaluate_all(
+                    "(els) => els.map(e => e.src || '')"
+                )
+                src_ids = set()
+                for src in srcs:
+                    src_ids.update(extract_goods_nos(src))
+
+                print(f"FOUND IN IMG SRCS: {len(src_ids)}")
+                collected.update(src_ids)
+
+            except Exception as e:
+                print(f"IMG PARSE ERROR: {e}")
+
+            page.close()
+
+        browser.close()
 
     print("\n====================")
-    print("TOTAL COLLECTED BEFORE SAVE:", len(collected))
+    print(f"TOTAL COLLECTED BEFORE SAVE: {len(collected)}")
 
     saved = 0
     failed = 0
@@ -84,16 +126,18 @@ def collect():
         try:
             save_goods_no(goods_no)
             saved += 1
-        except Exception:
+            print(f"SAVED: {goods_no}")
+        except Exception as e:
             failed += 1
+            print(f"FAILED TO SAVE {goods_no}: {e}")
 
     print("\n====================")
     print("FINAL SUMMARY")
-    print("Collected:", len(collected))
-    print("Saved:", saved)
-    print("Failed:", failed)
+    print(f"Collected: {len(collected)}")
+    print(f"Saved: {saved}")
+    print(f"Failed: {failed}")
     print("====================")
 
 
 if __name__ == "__main__":
-    collect()
+    main()
