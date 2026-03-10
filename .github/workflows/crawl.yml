@@ -30,3 +30,6 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           python crawler/crawl_oliveyoung.py
+
+- name: Parse products
+  run: python crawler/parse_products.py
