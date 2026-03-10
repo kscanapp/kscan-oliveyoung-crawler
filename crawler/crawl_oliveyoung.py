@@ -1,4 +1,5 @@
 import os
+import json
 from supabase import create_client, Client
 from playwright.sync_api import sync_playwright
 
@@ -10,127 +11,80 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-BASE_URL = "https://global.oliveyoung.com"
-CATEGORY_URL = f"{BASE_URL}/display/category?ctgrNo=1000001001"
+TARGET_URL = "https://global.oliveyoung.com/product/detail?prdtNo=GA230217683"
 
 
-def crawl_products():
-    products = []
+def save_debug_response(url: str, data):
+    try:
+        supabase.table("raw_products").insert({
+            "source_url": url,
+            "raw_payload": json.dumps(data, ensure_ascii=False)[:50000]
+        }).execute()
+        print(f"Saved raw response from: {url}")
+    except Exception as e:
+        print(f"Failed to save raw response: {e}")
+
+
+def crawl_network_data():
+    found_json = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.goto(CATEGORY_URL, wait_until="networkidle", timeout=60000)
 
-        print("Page loaded:", page.title())
+        def handle_response(response):
+            url = response.url.lower()
 
-        # 전체 HTML 먼저 확인용
-        html = page.content()
-        print("HTML length:", len(html))
+            interesting_keywords = [
+                "product",
+                "detail",
+                "goods",
+                "api",
+                "item",
+                "prdt",
+            ]
 
-        # 상품 카드 후보 탐색
-        candidate_selectors = [
-            ".prd_info",
-            ".product-item",
-            ".prdList li",
-            ".product-list li",
-            "[data-product-no]"
-        ]
+            if not any(keyword in url for keyword in interesting_keywords):
+                return
 
-        items = []
-        matched_selector = None
+            content_type = response.headers.get("content-type", "").lower()
 
-        for selector in candidate_selectors:
-            found = page.locator(selector).count()
-            print(f"Selector {selector}: {found}")
-            if found > 0:
-                items = page.locator(selector)
-                matched_selector = selector
-                break
-
-        if not matched_selector:
-            print("No product selector matched.")
-            browser.close()
-            return products
-
-        print("Using selector:", matched_selector)
-
-        count = min(items.count(), 50)
-
-        for i in range(count):
-            item = items.nth(i)
-
-            name = ""
-            price = ""
-            image = ""
-            product_url = BASE_URL
-
-            # 여러 후보 셀렉터로 안전하게 추출
-            for sel in [".prd_name", ".name", ".product-name", "img[alt]"]:
-                try:
-                    loc = item.locator(sel).first
-                    if loc.count() > 0:
-                        text = loc.inner_text().strip() if sel != "img[alt]" else loc.get_attribute("alt")
-                        if text:
-                            name = text.strip()
-                            break
-                except:
-                    pass
-
-            for sel in [".price_real", ".price", ".sale-price", ".product-price"]:
-                try:
-                    loc = item.locator(sel).first
-                    if loc.count() > 0:
-                        text = loc.inner_text().strip()
-                        if text:
-                            price = text
-                            break
-                except:
-                    pass
+            if "application/json" not in content_type:
+                return
 
             try:
-                img = item.locator("img").first
-                if img.count() > 0:
-                    image = img.get_attribute("src") or ""
-            except:
+                data = response.json()
+                print(f"\n=== JSON RESPONSE FOUND ===")
+                print(f"URL: {response.url}")
+                print(f"Top-level type: {type(data).__name__}")
+
+                if isinstance(data, dict):
+                    print(f"Top-level keys: {list(data.keys())[:20]}")
+                elif isinstance(data, list):
+                    print(f"List length: {len(data)}")
+
+                found_json.append((response.url, data))
+            except Exception:
                 pass
 
-            try:
-                link = item.locator("a").first
-                if link.count() > 0:
-                    href = link.get_attribute("href")
-                    if href:
-                        product_url = href if href.startswith("http") else BASE_URL + href
-            except:
-                pass
+        page.on("response", handle_response)
 
-            if not name:
-                continue
+        print(f"Opening page: {TARGET_URL}")
+        page.goto(TARGET_URL, wait_until="networkidle", timeout=60000)
 
-            products.append({
-                "brand": "",
-                "product_name": name,
-                "price_krw": price,
-                "image_url": image,
-                "oliveyoung_url": product_url
-            })
+        print("Page title:", page.title())
+        print("Final URL:", page.url)
 
         browser.close()
 
-    print(f"Crawled {len(products)} products")
-    return products
+    print(f"\nTotal JSON responses found: {len(found_json)}")
 
+    for url, data in found_json[:10]:
+        save_debug_response(url, data)
 
-def save_to_db(products):
-    if not products:
-        print("No products found to save.")
-        return
-
-    result = supabase.table("products").upsert(products).execute()
-    print(f"Saved {len(products)} products")
-    print(result)
+    return found_json
 
 
 if __name__ == "__main__":
-    products = crawl_products()
-    save_to_db(products)
+    results = crawl_network_data()
+    print(f"Captured {len(results)} candidate JSON responses")
