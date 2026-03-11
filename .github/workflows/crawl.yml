@@ -1,4 +1,4 @@
-name: OliveYoung Korea Crawler
+name: OliveYoung Korea ID Debug
 
 on:
   workflow_dispatch:
@@ -17,26 +17,18 @@ jobs:
       - name: install
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 supabase playwright
-          python -m playwright install --with-deps chromium
+          pip install requests supabase
 
-      - name: collect ids
+      - name: collect ids debug
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           python crawler/collect_product_ids_kr.py
 
-      - name: crawl detail
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      - name: show debug files
         run: |
-          python crawler/crawl_product_detail_kr.py
-
-      - name: parse products
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: |
-          python crawler/parse_products_kr.py
+          ls -R debug_output || true
+          head -100 debug_output/kr_page_1.html || true
+          head -100 debug_output/kr_page_2.html || true
+          head -100 debug_output/kr_page_3.html || true
