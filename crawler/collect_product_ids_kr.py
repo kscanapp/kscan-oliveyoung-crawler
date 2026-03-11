@@ -10,10 +10,13 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 URL = "https://www.oliveyoung.co.kr/store/display/getMCategoryListAjax.do"
 
 headers = {
-    "User-Agent": "Mozilla/5.0",
-    "Content-Type": "application/x-www-form-urlencoded"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    "Origin": "https://www.oliveyoung.co.kr",
+    "Referer": "https://www.oliveyoung.co.kr/store/main/main.do",
+    "X-Requested-With": "XMLHttpRequest"
 }
-
 
 def collect():
 
@@ -21,28 +24,35 @@ def collect():
 
     for page in range(1, 100):
 
-        data = {
+        payload = {
             "dispCatNo": "90000010001",
-            "pageIdx": str(page),
-            "rowsPerPage": "48"
+            "pageIdx": page,
+            "rowsPerPage": "48",
+            "prdSort": "01"
         }
 
-        r = requests.post(URL, headers=headers, data=data)
+        r = requests.post(URL, headers=headers, data=payload)
 
         print("PAGE:", page, "STATUS:", r.status_code)
 
-        data_json = r.json()
+        if r.status_code != 200:
+            print("BLOCKED:", r.text[:200])
+            break
 
-        goods = data_json.get("data", {}).get("prdList", [])
+        data = r.json()
 
-        if not goods:
+        goods_list = data.get("data", {}).get("prdList", [])
+
+        if not goods_list:
             print("NO MORE PRODUCTS")
             break
 
-        print("FOUND:", len(goods))
+        print("FOUND:", len(goods_list))
 
-        for g in goods:
+        for g in goods_list:
+
             goods_no = g.get("goodsNo")
+
             if goods_no:
                 collected.add(goods_no)
 
