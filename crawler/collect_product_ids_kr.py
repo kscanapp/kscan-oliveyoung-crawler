@@ -1,98 +1,71 @@
 import os
-import re
 import requests
 from supabase import create_client
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
-
-if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-    raise ValueError("Missing SUPABASE_URL or SUPABASE_SERVICE_KEY")
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-URLS = [
-    "https://www.oliveyoung.co.kr/store/main/getBestList.do",
-    "https://www.oliveyoung.co.kr/store/display/getMCategoryList.do?dispCatNo=90000010001&pageIdx=1",
-    "https://www.oliveyoung.co.kr/store/display/getMCategoryList.do?dispCatNo=90000010009&pageIdx=1",
-]
+URL = "https://www.oliveyoung.co.kr/store/display/getMCategoryList.do"
 
-HEADERS = {
+headers = {
     "User-Agent": "Mozilla/5.0",
-    "Referer": "https://www.oliveyoung.co.kr/",
+    "Content-Type": "application/x-www-form-urlencoded"
 }
 
-PATTERNS = [
-    re.compile(r"goodsNo=([A-Z0-9]+)", re.IGNORECASE),
-    re.compile(r'"goodsNo"\s*:\s*"([A-Z0-9]+)"', re.IGNORECASE),
-    re.compile(r"\bA\d{12}\b"),
-]
+def collect():
 
-
-def extract_goods_nos(text: str):
-    ids = set()
-    for pattern in PATTERNS:
-        for match in pattern.findall(text or ""):
-            if isinstance(match, tuple):
-                match = match[0]
-            ids.add(match)
-    return ids
-
-
-def main():
     collected = set()
 
-    os.makedirs("debug_output", exist_ok=True)
+    for page in range(1, 50):
 
-    for i, url in enumerate(URLS, start=1):
-        print(f"\nFETCHING: {url}")
+        data = {
+            "dispCatNo": "90000010001",
+            "fltDispCatNo": "",
+            "prdSort": "01",
+            "pageIdx": str(page),
+            "rowsPerPage": "48"
+        }
 
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=30)
-            print("STATUS:", r.status_code)
-            print("CONTENT-TYPE:", r.headers.get("content-type"))
+        r = requests.post(URL, headers=headers, data=data)
 
-            html = r.text
-            print("HTML LENGTH:", len(html))
+        print("PAGE:", page, "STATUS:", r.status_code)
 
-            debug_path = f"debug_output/kr_page_{i}.html"
-            with open(debug_path, "w", encoding="utf-8") as f:
-                f.write(html)
+        html = r.text
 
-            print("SAVED HTML:", debug_path)
+        if "goodsNo" not in html:
+            print("NO GOODS FOUND")
+            break
 
-            ids = extract_goods_nos(html)
-            print("FOUND IDS:", len(ids))
+        parts = html.split("goodsNo=")
 
-            sample = list(sorted(ids))[:20]
-            print("SAMPLE IDS:", sample)
+        ids = []
 
-            collected.update(ids)
+        for p in parts[1:]:
+            goods = p[:13]
+            if goods.startswith("A"):
+                ids.append(goods)
 
-        except Exception as e:
-            print("REQUEST FAILED:", e)
+        print("FOUND:", len(ids))
 
-    print("\n====================")
-    print("TOTAL COLLECTED:", len(collected))
+        for i in ids:
+            collected.add(i)
 
-    for goods_no in sorted(collected):
-        try:
-            supabase.table("product_ids_kr").upsert(
-                {
-                    "goods_no": goods_no,
-                    "detail_url": f"https://www.oliveyoung.co.kr/store/goods/getGoodsDetail.do?goodsNo={goods_no}"
-                },
-                on_conflict="goods_no"
-            ).execute()
-            print("SAVED:", goods_no)
-        except Exception as e:
-            print("FAILED TO SAVE:", goods_no, e)
+    print("TOTAL:", len(collected))
 
-    print("====================")
+    for goods_no in collected:
 
+        supabase.table("product_ids_kr").upsert(
+            {
+                "goods_no": goods_no,
+                "detail_url": f"https://www.oliveyoung.co.kr/store/goods/getGoodsDetail.do?goodsNo={goods_no}"
+            },
+            on_conflict="goods_no"
+        ).execute()
 
-if __name__ == "__main__":
-    main()
+        print("SAVED:", goods_no)
+
 
 if __name__ == "__main__":
-    main()
+    collect()
