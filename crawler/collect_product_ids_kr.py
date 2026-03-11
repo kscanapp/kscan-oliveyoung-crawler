@@ -3,64 +3,96 @@ import re
 import requests
 from supabase import create_client
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+    raise ValueError("Missing SUPABASE_URL or SUPABASE_SERVICE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-BASE = "https://www.oliveyoung.co.kr"
-
-URL = "https://www.oliveyoung.co.kr/store/display/getMCategoryList.do"
+URLS = [
+    "https://www.oliveyoung.co.kr/store/main/getBestList.do",
+    "https://www.oliveyoung.co.kr/store/display/getMCategoryList.do?dispCatNo=90000010001&pageIdx=1",
+    "https://www.oliveyoung.co.kr/store/display/getMCategoryList.do?dispCatNo=90000010009&pageIdx=1",
+]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
-    "Referer": "https://www.oliveyoung.co.kr/"
+    "Referer": "https://www.oliveyoung.co.kr/",
 }
 
-goods_pattern = re.compile(r"goodsNo=([A-Z0-9]+)")
+PATTERNS = [
+    re.compile(r"goodsNo=([A-Z0-9]+)", re.IGNORECASE),
+    re.compile(r'"goodsNo"\s*:\s*"([A-Z0-9]+)"', re.IGNORECASE),
+    re.compile(r"\bA\d{12}\b"),
+]
 
 
-def collect():
+def extract_goods_nos(text: str):
+    ids = set()
+    for pattern in PATTERNS:
+        for match in pattern.findall(text or ""):
+            if isinstance(match, tuple):
+                match = match[0]
+            ids.add(match)
+    return ids
 
+
+def main():
     collected = set()
 
-    for page in range(1, 50):
+    os.makedirs("debug_output", exist_ok=True)
 
-        params = {
-            "dispCatNo": "90000010001",
-            "pageIdx": page
-        }
+    for i, url in enumerate(URLS, start=1):
+        print(f"\nFETCHING: {url}")
 
-        r = requests.get(URL, params=params, headers=HEADERS)
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=30)
+            print("STATUS:", r.status_code)
+            print("CONTENT-TYPE:", r.headers.get("content-type"))
 
-        print("PAGE:", page, "STATUS:", r.status_code)
+            html = r.text
+            print("HTML LENGTH:", len(html))
 
-        html = r.text
+            debug_path = f"debug_output/kr_page_{i}.html"
+            with open(debug_path, "w", encoding="utf-8") as f:
+                f.write(html)
 
-        goods = goods_pattern.findall(html)
+            print("SAVED HTML:", debug_path)
 
-        print("FOUND:", len(goods))
+            ids = extract_goods_nos(html)
+            print("FOUND IDS:", len(ids))
 
-        if not goods:
-            break
+            sample = list(sorted(ids))[:20]
+            print("SAMPLE IDS:", sample)
 
-        for g in goods:
-            collected.add(g)
+            collected.update(ids)
 
-    print("TOTAL:", len(collected))
+        except Exception as e:
+            print("REQUEST FAILED:", e)
 
-    for goods_no in collected:
+    print("\n====================")
+    print("TOTAL COLLECTED:", len(collected))
 
-        supabase.table("product_ids_kr").upsert(
-            {
-                "goods_no": goods_no,
-                "detail_url": f"https://www.oliveyoung.co.kr/store/goods/getGoodsDetail.do?goodsNo={goods_no}"
-            },
-            on_conflict="goods_no"
-        ).execute()
+    for goods_no in sorted(collected):
+        try:
+            supabase.table("product_ids_kr").upsert(
+                {
+                    "goods_no": goods_no,
+                    "detail_url": f"https://www.oliveyoung.co.kr/store/goods/getGoodsDetail.do?goodsNo={goods_no}"
+                },
+                on_conflict="goods_no"
+            ).execute()
+            print("SAVED:", goods_no)
+        except Exception as e:
+            print("FAILED TO SAVE:", goods_no, e)
 
-        print("SAVED:", goods_no)
+    print("====================")
 
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     collect()
