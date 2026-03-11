@@ -7,23 +7,22 @@ SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-URL = "https://www.oliveyoung.co.kr/store/display/getMCategoryList.do"
+URL = "https://www.oliveyoung.co.kr/store/display/getMCategoryListAjax.do"
 
 headers = {
     "User-Agent": "Mozilla/5.0",
     "Content-Type": "application/x-www-form-urlencoded"
 }
 
+
 def collect():
 
     collected = set()
 
-    for page in range(1, 50):
+    for page in range(1, 100):
 
         data = {
             "dispCatNo": "90000010001",
-            "fltDispCatNo": "",
-            "prdSort": "01",
             "pageIdx": str(page),
             "rowsPerPage": "48"
         }
@@ -32,25 +31,20 @@ def collect():
 
         print("PAGE:", page, "STATUS:", r.status_code)
 
-        html = r.text
+        data_json = r.json()
 
-        if "goodsNo" not in html:
-            print("NO GOODS FOUND")
+        goods = data_json.get("data", {}).get("prdList", [])
+
+        if not goods:
+            print("NO MORE PRODUCTS")
             break
 
-        parts = html.split("goodsNo=")
+        print("FOUND:", len(goods))
 
-        ids = []
-
-        for p in parts[1:]:
-            goods = p[:13]
-            if goods.startswith("A"):
-                ids.append(goods)
-
-        print("FOUND:", len(ids))
-
-        for i in ids:
-            collected.add(i)
+        for g in goods:
+            goods_no = g.get("goodsNo")
+            if goods_no:
+                collected.add(goods_no)
 
     print("TOTAL:", len(collected))
 
